@@ -91,42 +91,55 @@ def plot_reconstructed(autoencoder,  r0=(-5, 10), r1=(-10, 5), n=12):
 
             
 
+def show(image):
+    ''' plot image'''
+    fig = plt.figure
+    plt.imshow(image, cmap='gray')
+    plt.savefig('x_hat.png')
+    plt.show()
                
             
 class Combine_VAE(nn.Module):
     ''' gets the numbeer of categories and the number of wanted latent dimentions '''
     def __init__(self,latent_dims,categorical_dim):
         super(Combine_VAE, self).__init__()
-        
-        
-        self.linear1 = nn.Linear(512, 256)
-        self.linear2 = nn.Linear(256, 128)
-        self.conv1 = nn.Conv2d(in_channels=3, out_channels=32, kernel_size=4)
-        self.conv2 = nn.Conv2d(in_channels=32, out_channels=64, kernel_size=4)
-        self.conv3 = nn.Conv2d(in_channels=64, out_channels=128, kernel_size=4)
+        '''encoders layers'''
+        self.conv1 = nn.Conv2d(in_channels=3, out_channels=8, kernel_size=4)
+        self.conv2 = nn.Conv2d(in_channels=8, out_channels=16, kernel_size=4)
+        self.conv3 = nn.Conv2d(in_channels=16, out_channels=32, kernel_size=4)
+        self.conv4 = nn.Conv2d(in_channels=32, out_channels=64, kernel_size=4)
+        #self.linear1 = nn.Linear(512, 256)
+        self.linear2 = nn.Linear(128, 128)
         self.pooling1 = nn.MaxPool2d(kernel_size=4)
         self.to_mean_logvar = nn.Linear(128, 2*latent_dims)
         self.to_gumbel_softmax = nn.Linear(128, latent_dims * categorical_dim)
-        
-        self.to_decoder = nn.Linear(latent_dims + latent_dims * categorical_dim, 256)
-        #self.upscale = nn.ConvTranspose2d(1,1,latent_dims + latent_dims * categorical_dim,kernel_size=2)#in chennels,out chennels 
-        #self.upscale = nn.ConvTranspose2d(in_channels=latent_dims + latent_dims * categorical_dim,out_channels=256,kernel_size=2)
-        self.linear3 = nn.Linear(256, 512)
-        self.linear4 = nn.Linear(512, 784)      
+        '''decoders layers'''
+        self.to_decoder = nn.Linear(latent_dims + latent_dims * categorical_dim, 128)
+        self.linear3 = nn.Linear(128, 256)
+        self.linear4 = nn.Linear(256, 512)
+        self.linear5 = nn.Linear(512, 1024)
+        self.upscale1 = nn.ConvTranspose2d(64, 32, 4)
+        self.upscale2 = nn.ConvTranspose2d(32, 16, 4)
+        self.upscale3 = nn.ConvTranspose2d(16, 8, 4)
+        self.upscale4 = nn.ConvTranspose2d(8, 3, 4)
+
     
         self.N = latent_dims
         self.K = categorical_dim
         self.temp = 1
         self.hard = False
     def image_process(self,x):
+        #print(x.shape)
         x = F.relu(self.conv1(x))
         x = self.pooling1(x)
         x = F.relu(self.conv2(x))
         
         x = F.relu(self.conv3(x))
         x = self.pooling1(x)
+        
         x = torch.flatten(x, start_dim=1)
-        x = F.relu(self.linear1(x))
+        #print(x.shape)
+        #x = F.relu(self.linear1(x))
         x = F.relu(self.linear2(x))
         return x
     def continues_encoder(self,x):
@@ -147,26 +160,35 @@ class Combine_VAE(nn.Module):
 
         return F.gumbel_softmax(q_y, temp, hard).reshape(x.size(0), self.N * self.K)
     
-    def combine_decoder(self,z):
-        #z = torch.cat((z_continuous, z_discrete), 1) #probebly not the best way
-        #print(z.shape)
-        z = F.relu(self.to_decoder (z))
-        z = F.relu(self.linear3(z))
-        z = torch.sigmoid(self.linear4(z))
-        return z.reshape((-1, 1, 28, 28))
+    def combine_decoder(self,x):
+        print(x.shape)
+        x = F.relu(self.to_decoder (x))
+        x = F.relu(self.linear3(x))
+        x = F.relu(self.linear4(x))
+        #x = F.relu(self.linear5(x))
+        x= x.reshape(-1,64,4,4)
+        print('first ok')
+        x = F.relu(self.upscale1(x))
+        x = F.relu(self.upscale2(x))
+        x = F.relu(self.upscale3(x))
+        x = F.relu(self.upscale4(x))
+        print(x.shape)
+        # z = F.relu(self.to_decoder (z))
+        # z = F.relu(self.linear3(z))
+        # z = torch.sigmoid(self.linear4(z))
+        return x
 
     def forward(self ,images):
         continues_output = self.continues_encoder(images)
-        print('continues_output:',continues_output)
+        #print('continues_output:',continues_output)
         
         discrete_output = self.discreate_encoder(images, self.temp, self.hard)
-        print('discrete_output:',discrete_output)
+        #print('discrete_output:',discrete_output)
         # # the outpt of the 2 encoders is combined to the decoder
-        # # print(z)
-        # # print(z.shape)
-        # z_c =  torch.cat((z, c), 1) 
+
+        z_c =  torch.cat((discrete_output , continues_output), 1) 
         # #print(z_c.shape)
-        # return self.combine_decoder(z_c)         
+        return self.combine_decoder(z_c)         
 
 def Train (model,data,num_epochs, temp=1.0, hard=False):
     temp_min = 0.5
@@ -175,11 +197,12 @@ def Train (model,data,num_epochs, temp=1.0, hard=False):
     train_loss = 0
     kl_continues_list = []
     kl_discrete_list = []
+    print('start training')
     for epoch in range(num_epochs):
         for batch_idx, (x, _) in enumerate(data):
             optimizer.zero_grad()
             x = x.to(device) #GPU
-            x_hat = model(x, temp, hard) # create image with Combine_VAE
+            x_hat = model(x) # create image with Combine_VAE
             loss = F.binary_cross_entropy(x_hat, x, reduction='sum') + model.kl_continues + model.kl_discrete
             kl_continues_list.append(model.kl_continues)
             kl_discrete_list.append(model.kl_discrete)
@@ -190,7 +213,7 @@ def Train (model,data,num_epochs, temp=1.0, hard=False):
                 temp = np.maximum(temp * np.exp(-ANNEAL_RATE * batch_idx), temp_min)
 
     x_hat = x_hat.to('cpu').detach().numpy() # transform the tensor to numpy
-    show(x_hat[0].reshape(28,28))
+    show(x_hat[0].reshape(64,64))
     plt.plot(kl_continues_list,label = 'continues')
     #plt.plot(kl_discrete_list[100,:],label = 'discrete ')
     plt.legend()
@@ -201,7 +224,7 @@ def Train (model,data,num_epochs, temp=1.0, hard=False):
 
 if __name__ == '__main__':
     ''' load data and create dataloader'''
-    batch_size = 1
+    batch_size = 2
     image_size = 64
 
     train_dataset = dsets.CelebA(root='/datashare',split = 'train',
@@ -211,7 +234,7 @@ if __name__ == '__main__':
                                  transforms.ToTensor(),
                                  transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))]),download=False)# make sure you set it to False
     
-    train_loader = torch.utils.data.DataLoader(dataset=train_dataset, batch_size=batch_size,shuffle=True)
+    dataloader = torch.utils.data.DataLoader(dataset=train_dataset, batch_size=batch_size,shuffle=True)
     
     '''parameters for VAE model'''
     latent_dims = 3
@@ -220,15 +243,9 @@ if __name__ == '__main__':
     hard = False
     ANNEAL_RATE = 0.00003
     model = Combine_VAE(latent_dims, categorical_dim)
-    #model = model.to(device)
-    
-    for batch_idx, (images, labels) in enumerate(train_loader):
-        x_hat = model(images)
-        # print(labels)
-        # print(labels.shape)
-        # optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
-        # optimizer.zero_grad()
-        #x = x.to(device) #GPU
-        #print(x.shape)
-        break
+    model = model.to(device)
+    model = Train(model,dataloader,1,temp,hard)
+    #x_hat = x_hat.to('cpu').detach().numpy() # transform the tensor to numpy
+    #show(x_hat[0].reshape(28,28))
+
 
