@@ -98,11 +98,15 @@ class Combine_VAE(nn.Module):
     def __init__(self,latent_dims,categorical_dim):
         super(Combine_VAE, self).__init__()
         
-        self.linear1 = nn.Linear(784, 512)
-        self.linear2 = nn.Linear(512, 256)
-    
-        self.to_mean_logvar = nn.Linear(256, 2*latent_dims)
-        self.to_gumbel_softmax = nn.Linear(256, latent_dims * categorical_dim)
+        
+        self.linear1 = nn.Linear(512, 256)
+        self.linear2 = nn.Linear(256, 128)
+        self.conv1 = nn.Conv2d(in_channels=3, out_channels=32, kernel_size=4)
+        self.conv2 = nn.Conv2d(in_channels=32, out_channels=64, kernel_size=4)
+        self.conv3 = nn.Conv2d(in_channels=64, out_channels=128, kernel_size=4)
+        self.pooling1 = nn.MaxPool2d(kernel_size=4)
+        self.to_mean_logvar = nn.Linear(128, 2*latent_dims)
+        self.to_gumbel_softmax = nn.Linear(128, latent_dims * categorical_dim)
         
         self.to_decoder = nn.Linear(latent_dims + latent_dims * categorical_dim, 256)
         #self.upscale = nn.ConvTranspose2d(1,1,latent_dims + latent_dims * categorical_dim,kernel_size=2)#in chennels,out chennels 
@@ -112,21 +116,29 @@ class Combine_VAE(nn.Module):
     
         self.N = latent_dims
         self.K = categorical_dim
-    
-
-    def continues_encoder(self,x):
+        self.temp = 1
+        self.hard = False
+    def image_process(self,x):
+        x = F.relu(self.conv1(x))
+        x = self.pooling1(x)
+        x = F.relu(self.conv2(x))
+        
+        x = F.relu(self.conv3(x))
+        x = self.pooling1(x)
         x = torch.flatten(x, start_dim=1)
         x = F.relu(self.linear1(x))
         x = F.relu(self.linear2(x))
+        return x
+    def continues_encoder(self,x):
+        x = self.image_process(x)
         mu, log_var = torch.split(self.to_mean_logvar(x),3, dim=-1)
         self.kl_continues = -0.5 * torch.sum(1 + log_var - mu.pow(2) - log_var.exp())
         '''  I need to save kl and plot it'''
         return reparametrization_trick(mu, log_var)
+
     
     def discreate_encoder(self,x,temp,hard):
-        x = torch.flatten(x, start_dim=1)
-        x = F.relu(self.linear1(x))
-        x = F.relu(self.linear2(x))
+        x = self.image_process(x)
         x = F.relu(self.to_gumbel_softmax(x))
         q_y = x.view(x.size(0), self.N, self.K)
         q = F.softmax(q_y, dim=-1).reshape(x.size(0)*self.N, self.K)
@@ -143,15 +155,18 @@ class Combine_VAE(nn.Module):
         z = torch.sigmoid(self.linear4(z))
         return z.reshape((-1, 1, 28, 28))
 
-    def forward(self ,x ,temp, hard):
-        z = self.continues_encoder(x)
-        c = self.discreate_encoder(x, temp, hard)
-        # the outpt of the 2 encoders is combined to the decoder
-        # print(z)
-        # print(z.shape)
-        z_c =  torch.cat((z, c), 1) 
-        #print(z_c.shape)
-        return self.combine_decoder(z_c)         
+    def forward(self ,images):
+        continues_output = self.continues_encoder(images)
+        print('continues_output:',continues_output)
+        
+        discrete_output = self.discreate_encoder(images, self.temp, self.hard)
+        print('discrete_output:',discrete_output)
+        # # the outpt of the 2 encoders is combined to the decoder
+        # # print(z)
+        # # print(z.shape)
+        # z_c =  torch.cat((z, c), 1) 
+        # #print(z_c.shape)
+        # return self.combine_decoder(z_c)         
 
 def Train (model,data,num_epochs, temp=1.0, hard=False):
     temp_min = 0.5
@@ -186,7 +201,7 @@ def Train (model,data,num_epochs, temp=1.0, hard=False):
 
 if __name__ == '__main__':
     ''' load data and create dataloader'''
-    batch_size = 10
+    batch_size = 1
     image_size = 64
 
     train_dataset = dsets.CelebA(root='/datashare',split = 'train',
@@ -200,15 +215,20 @@ if __name__ == '__main__':
     
     '''parameters for VAE model'''
     latent_dims = 3
-    categorical_dim = 10
+    categorical_dim = 40
     temp = 1
     hard = False
     ANNEAL_RATE = 0.00003
-    # model = Combine_VAE(latent_dims, categorical_dim)
-    # model = model.to(device)
-    for batch_idx, (x, _) in enumerate(train_loader):
+    model = Combine_VAE(latent_dims, categorical_dim)
+    #model = model.to(device)
+    
+    for batch_idx, (images, labels) in enumerate(train_loader):
+        x_hat = model(images)
+        # print(labels)
+        # print(labels.shape)
         # optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
         # optimizer.zero_grad()
-        x = x.to(device) #GPU
-        print(x.shape)
+        #x = x.to(device) #GPU
+        #print(x.shape)
+        break
 
